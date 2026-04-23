@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Дашборд поступлений ДС</title>
+<title>Дашборд CashFlow</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -182,6 +182,26 @@ select option{background:#1a2d4a;}
 .hint-text{font-size:11px;color:#4a6a8a;line-height:1.6;}
 .hint-text a{color:#3b82f6;text-decoration:none;}.hint-text a:hover{text-decoration:underline;}
 
+/* ── FILE STAMP (жёлтый блок с датой файла) ── */
+.file-stamp{
+  display:none;
+  flex-direction:column;align-items:flex-end;
+  background:#fef08a;border:2px solid #ca8a04;border-radius:8px;
+  padding:5px 12px;line-height:1.35;
+}
+.file-stamp.visible{display:flex;}
+.file-stamp-label{font-size:9px;font-weight:700;color:#713f12;text-transform:uppercase;letter-spacing:.6px;}
+.file-stamp-date{font-size:13px;font-weight:800;color:#1a0a00;white-space:nowrap;}
+.file-stamp-name{font-size:9px;color:#78350f;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis;}
+.ref-date-wrap{display:flex;align-items:center;gap:6px;background:#1a2d4a;border:1px solid #2d4a7a;border-radius:8px;padding:5px 10px;}
+.ref-date-label{font-size:11px;color:#7ea8d8;white-space:nowrap;}
+.ref-date-input{background:transparent;border:none;color:#c4d9f0;font-size:13px;font-family:'Segoe UI',Arial,sans-serif;outline:none;cursor:pointer;width:130px;}
+.ref-date-input::-webkit-calendar-picker-indicator{filter:invert(0.6);cursor:pointer;}
+.ref-date-input:focus{color:#f0f6ff;}
+.ref-date-clear{background:none;border:none;color:#4a6a8a;font-size:14px;cursor:pointer;padding:0 2px;line-height:1;transition:color .15s;}
+.ref-date-clear:hover{color:#f87171;}
+.ref-date-clear.hidden{display:none;}
+
 ::-webkit-scrollbar{width:5px;height:5px;}
 ::-webkit-scrollbar-track{background:#0f1623;}
 ::-webkit-scrollbar-thumb{background:#2d4a7a;border-radius:3px;}
@@ -246,6 +266,16 @@ select option{background:#1a2d4a;}
       <p id="headerSub">ERP РИАК/РИАЛ · Факт</p>
     </div>
     <div class="header-right">
+      <div class="file-stamp" id="fileStamp">
+        <span class="file-stamp-label">📄 Файл обновлён</span>
+        <span class="file-stamp-date" id="fileStampDate">—</span>
+        <span class="file-stamp-name" id="fileStampName"></span>
+      </div>
+      <div class="ref-date-wrap">
+        <label class="ref-date-label">📅 Дата актуальности</label>
+        <input type="date" id="refDateInput" class="ref-date-input" onchange="onRefDateChange()">
+        <button class="ref-date-clear" id="refDateClear" onclick="clearRefDate()" title="Сбросить — использовать максимальную дату из данных">✕</button>
+      </div>
       <span class="data-age" id="dataAge"></span>
       <button class="hbtn" id="refreshBtn" onclick="triggerRefresh()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -562,7 +592,7 @@ async function connectScript() {
     LIVE_DATA = records;
     currentSource = 'script';
     document.getElementById('scriptUrl').value = url;
-    launchApp(`Google Drive · ${new Date(obj.updated||Date.now()).toLocaleString('ru-RU')}`, url);
+    launchApp(`Google Drive · ${new Date(obj.updated||Date.now()).toLocaleString('ru-RU')}`, url, obj.fileModified, obj.fileName);
   } catch(err) {
     showStatus('✗ Ошибка: ' + err.message, 'err');
     document.getElementById('connectScriptBtn').disabled = false;
@@ -584,7 +614,9 @@ function connectFile(input) {
       LIVE_DATA = records;
       currentSource = 'file';
       document.getElementById('fileNameLabel').textContent = file.name;
-      launchApp(`Файл: ${file.name}`, null);
+      // file.lastModified — дата изменения файла на диске (миллисекунды Unix)
+      const fileModIso = file.lastModified ? new Date(file.lastModified).toISOString() : null;
+      launchApp(`Файл: ${file.name}`, null, fileModIso, file.name);
     } catch(err) {
       showStatus('✗ Ошибка: ' + err.message, 'err');
     }
@@ -592,7 +624,7 @@ function connectFile(input) {
   reader.readAsArrayBuffer(file);
 }
 
-function launchApp(sourceLabel, scriptUrl) {
+function launchApp(sourceLabel, scriptUrl, fileModified, fileName) {
   document.getElementById('connectScreen').style.display = 'none';
   document.getElementById('mainApp').style.display = 'block';
   document.getElementById('headerSub').textContent = 'ERP РИАК/РИАЛ · Факт · ' + sourceLabel;
@@ -605,10 +637,32 @@ function launchApp(sourceLabel, scriptUrl) {
     setStatus('fileStatus','ok','✓ Файл загружен.');
     setCardActive('cardFile');
   }
+  setFileStamp(fileModified, fileName);
   rebuildSelects(LIVE_DATA);
+  setDefaultRefDate(LIVE_DATA);
   AF = {cfo: DEF_CFO, org:'__ALL__', proj:'__ALL__', arts:[...DEF_ART]};
   updateBadge();
   refresh();
+}
+
+/* Показывает жёлтый блок с датой/временем последнего изменения файла */
+function setFileStamp(isoDate, name) {
+  const stamp = document.getElementById('fileStamp');
+  const dateEl = document.getElementById('fileStampDate');
+  const nameEl = document.getElementById('fileStampName');
+  if (!isoDate) {
+    stamp.classList.remove('visible');
+    return;
+  }
+  const d = new Date(isoDate);
+  // Форматируем: дд.мм.гггг чч:мм:сс
+  const pad = n => String(n).padStart(2,'0');
+  const dateStr =
+    pad(d.getDate()) + '.' + pad(d.getMonth()+1) + '.' + d.getFullYear() + '  ' +
+    pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  dateEl.textContent = dateStr;
+  nameEl.textContent = name || '';
+  stamp.classList.add('visible');
 }
 
 /* ══ IN-APP SOURCE CONTROLS ════════════════════════ */
@@ -632,9 +686,11 @@ async function fetchFromScript(manual=false) {
     if (!records.length) throw new Error('Пустой массив данных');
     LIVE_DATA = records;
     currentSource = 'script';
+    setDefaultRefDate(LIVE_DATA);
     rebuildSelects(LIVE_DATA);
     applyFiltersQuiet();
     setCardActive('cardScript');
+    setFileStamp(obj.fileModified, obj.fileName);
     const upd = new Date(obj.updated||Date.now()).toLocaleString('ru-RU');
     document.getElementById('headerSub').textContent = `ERP РИАК/РИАЛ · Факт · Google Drive · ${upd}`;
     document.getElementById('dataAge').textContent = 'Данные: только что';
@@ -663,9 +719,12 @@ function loadFromFile(input) {
       if (!records.length) throw new Error('Не найдено строк с суммой');
       LIVE_DATA = records;
       currentSource = 'file';
+      setDefaultRefDate(LIVE_DATA);
       rebuildSelects(LIVE_DATA);
       applyFiltersQuiet();
       setCardActive('cardFile');
+      const fileModIso = file.lastModified ? new Date(file.lastModified).toISOString() : null;
+      setFileStamp(fileModIso, file.name);
       document.getElementById('headerSub').textContent = `ERP РИАК/РИАЛ · Факт · Файл: ${file.name}`;
       document.getElementById('dataAge').textContent = '';
       setStatus('fileStatus','ok',`✓ Загружено ${records.length.toLocaleString('ru-RU')} строк из «${file.name}»`);
@@ -688,7 +747,63 @@ function showOverlay(t,s){document.getElementById('loadText').textContent=t||'';
 function hideOverlay(){document.getElementById('loadOverlay').classList.remove('show');}
 function switchTab(idx,el){document.querySelectorAll('.tab-nav a').forEach(a=>a.classList.remove('active'));document.querySelectorAll('.slide').forEach(s=>s.classList.remove('active'));el.classList.add('active');document.getElementById('slide'+idx).classList.add('active');return false;}
 
-/* ══ SELECTS ════════════════════════════════════════ */
+/* ══ REF DATE CONTROLS ══════════════════════════════ */
+function onRefDateChange(){
+  const inp=document.getElementById('refDateInput');
+  const clr=document.getElementById('refDateClear');
+  if(inp.value){clr.classList.remove('hidden');}
+  else{clr.classList.add('hidden');}
+  if(LIVE_DATA) refresh();
+}
+function clearRefDate(){
+  document.getElementById('refDateInput').value='';
+  document.getElementById('refDateClear').classList.add('hidden');
+  if(LIVE_DATA) refresh();
+}
+function initRefDate(){
+  document.getElementById('refDateClear').classList.add('hidden');
+}
+/* Устанавливает дату актуальности автоматически при загрузке данных
+   (максимальная дата из данных), если поле пустое */
+function setDefaultRefDate(data){
+  const inp=document.getElementById('refDateInput');
+  if(inp.value) return;  // пользователь уже выбрал — не перезаписываем
+  const maxStr=data.reduce((m,r)=>r.date>m?r.date:m,'2000-01-01');
+  inp.value=maxStr;
+  document.getElementById('refDateClear').classList.remove('hidden');
+}
+
+/* Обновляет заголовки секций с реальными датами периода */
+function updateSectionTitles(data){
+  const ref=getRefDate(data);
+  const refStr=dateToStr(ref);
+  const refFmt=ref.toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric'});
+
+  // Daily: от (ref - 9 дней) до ref
+  const dayFrom=new Date(ref); dayFrom.setDate(ref.getDate()-9);
+  const dayFromFmt=dayFrom.toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric'});
+  document.querySelector('#slide0 .section-card:first-child .section-header h2').textContent=
+    `📋 Ежедневно — ${dayFromFmt} – ${refFmt}`;
+
+  // Weekly: от понедельника 10-й недели назад до воскресенья недели ref
+  const dow=ref.getDay(); const dToMon=dow===0?6:dow-1;
+  const wkMon=new Date(ref); wkMon.setDate(ref.getDate()-dToMon);
+  const wkFrom=new Date(wkMon); wkFrom.setDate(wkMon.getDate()-9*7);
+  const wkTo=new Date(wkMon); wkTo.setDate(wkMon.getDate()+6);
+  const wkFromFmt=wkFrom.toLocaleString('ru-RU',{day:'2-digit',month:'2-digit'});
+  const wkToFmt=wkTo.toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric'});
+  document.querySelector('#slide0 .section-card:last-child .section-header h2').textContent=
+    `📆 Понедельно — ${wkFromFmt} – ${wkToFmt}`;
+
+  // Monthly: от (ref - 12 мес) до месяца ref
+  const monFrom=new Date(ref.getFullYear(),ref.getMonth()-12,1);
+  const monFromFmt=monFrom.toLocaleString('ru-RU',{month:'long',year:'numeric'});
+  const monToFmt=ref.toLocaleString('ru-RU',{month:'long',year:'numeric'});
+  document.querySelector('#slide1 .section-header h2').textContent=
+    `📅 Помесячно — ${monFromFmt} – ${monToFmt}`;
+}
+
+
 function uniq(arr,key){return[...new Set(arr.map(r=>r[key]).filter(v=>v&&v!=='Не указано'&&v!=='Не указан'))].sort();}
 function fillSel(id,vals,preferred){
   const sel=document.getElementById(id);
@@ -769,39 +884,106 @@ function fmtMln(v){
 }
 
 /* ══ AGGREGATIONS ═══════════════════════════════════ */
-function maxDate(d){return d.reduce((m,r)=>r.date>m?r.date:m,'2000-01-01');}
+
+/* Возвращает Date — дату актуальности.
+   Если поле заполнено — берём её.
+   Иначе — максимальную дату из данных. */
+function getRefDate(data) {
+  const inp = document.getElementById('refDateInput');
+  if (inp && inp.value) {
+    // Парсим как локальную дату (не UTC), чтобы не было сдвига часового пояса
+    const [y,m,d] = inp.value.split('-').map(Number);
+    return new Date(y, m-1, d);
+  }
+  // Берём максимальную дату из данных
+  const maxStr = data.reduce((m,r)=>r.date>m?r.date:m,'2000-01-01');
+  const [y,m,d] = maxStr.split('-').map(Number);
+  return new Date(y, m-1, d);
+}
+
+/* Форматирование даты в YYYY-MM-DD без UTC-сдвига */
+function dateToStr(d) {
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
 
 function monthlyData(data){
-  const max=new Date(maxDate(data));const months=[];
-  for(let i=12;i>=0;i--){const d=new Date(max.getFullYear(),max.getMonth()-i,1);months.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'));}
+  const ref=getRefDate(data);
+  const months=[];
+  // 12 предыдущих месяцев + месяц даты актуальности = итого 13 ключей
+  for(let i=12;i>=0;i--){
+    const d=new Date(ref.getFullYear(),ref.getMonth()-i,1);
+    months.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'));
+  }
+  const refMonthKey = ref.getFullYear()+'-'+String(ref.getMonth()+1).padStart(2,'0');
   const g={};months.forEach(m=>g[m]=0);
-  data.forEach(r=>{const m=r.date.substring(0,7);if(m in g)g[m]+=r.amount;});
-  const labels=months.map(m=>{const[y,mo]=m.split('-');return new Date(y,mo-1).toLocaleString('ru-RU',{month:'short',year:'2-digit'});});
+  // Учитываем только строки с датой <= даты актуальности
+  const refStr = dateToStr(ref);
+  data.forEach(r=>{
+    if(r.date>refStr) return;        // позже даты актуальности — игнорируем
+    const m=r.date.substring(0,7);
+    if(m in g)g[m]+=r.amount;
+  });
+  const labels=months.map(m=>{
+    const[y,mo]=m.split('-');
+    const lbl=new Date(y,mo-1).toLocaleString('ru-RU',{month:'short',year:'2-digit'});
+    return m===refMonthKey?lbl+' ◀':lbl;   // маркер текущего месяца
+  });
   return {labels,values:months.map(m=>g[m]),keys:months};
 }
 
 function weeklyData(data){
-  const max=new Date(maxDate(data));const weeks=[];
+  const ref=getRefDate(data);
+  const refStr=dateToStr(ref);
+
+  // Определяем неделю, содержащую дату актуальности
+  // Понедельник недели ref: отматываем к понедельнику
+  const dow=ref.getDay();                  // 0=Вс,1=Пн,...,6=Сб
+  const daysToMon = dow===0 ? 6 : dow-1;  // сдвиг до понедельника
+  const refWeekMon=new Date(ref); refWeekMon.setDate(ref.getDate()-daysToMon);
+
+  // Строим 10 недель назад включая неделю ref
+  const weeks=[];
   for(let i=9;i>=0;i--){
-    const s=new Date(max);s.setDate(max.getDate()-max.getDay()+1-i*7);
-    const e=new Date(s);e.setDate(s.getDate()+6);
-    weeks.push({start:s.toISOString().slice(0,10),end:e.toISOString().slice(0,10)});
+    const s=new Date(refWeekMon); s.setDate(refWeekMon.getDate()-i*7);
+    const e=new Date(s); e.setDate(s.getDate()+6);
+    weeks.push({start:dateToStr(s),end:dateToStr(e)});
   }
   const g=weeks.map(()=>0);
-  data.forEach(r=>weeks.forEach((w,i)=>{if(r.date>=w.start&&r.date<=w.end)g[i]+=r.amount;}));
-  return {labels:weeks.map((w,i)=>`Нед.${i+1} (${w.start.slice(5)}–${w.end.slice(5)})`),values:g,weeks};
+  data.forEach(r=>{
+    if(r.date>refStr) return;   // позже даты актуальности
+    weeks.forEach((w,i)=>{if(r.date>=w.start&&r.date<=w.end)g[i]+=r.amount;});
+  });
+  // Метки: дд.мм–дд.мм
+  const labels=weeks.map((w,i)=>{
+    const fs=w.start.slice(5).split('-').reverse().join('.');
+    const fe=w.end.slice(5).split('-').reverse().join('.');
+    const mark=(i===9)?' ◀':'';   // маркер последней (актуальной) недели
+    return `Нед.${i+1} (${fs}–${fe})${mark}`;
+  });
+  return {labels,values:g,weeks};
 }
 
 function dailyData(data){
-  const max=new Date(maxDate(data));const days=[];
-  for(let i=9;i>=0;i--){const d=new Date(max);d.setDate(max.getDate()-i);days.push(d.toISOString().slice(0,10));}
+  const ref=getRefDate(data);
+  const refStr=dateToStr(ref);
+  // 10 дней, последний = дата актуальности
+  const days=[];
+  for(let i=9;i>=0;i--){
+    const d=new Date(ref); d.setDate(ref.getDate()-i);
+    days.push(dateToStr(d));
+  }
   const cl={},cs={};days.forEach(d=>{cl[d]=0;cs[d]=0;});
   data.forEach(r=>{
+    if(r.date>refStr) return;   // позже даты актуальности
     if(!(r.date in cl))return;
     if(r.cashtype==='Безналичные')cl[r.date]+=r.amount;
     else cs[r.date]+=r.amount;
   });
-  const labels=days.map(d=>new Date(d+'T12:00:00').toLocaleString('ru-RU',{day:'2-digit',month:'short'}));
+  const labels=days.map((d,i)=>{
+    const dt=new Date(d+'T12:00:00');
+    const lbl=dt.toLocaleString('ru-RU',{day:'2-digit',month:'short'});
+    return i===9?lbl+' ◀':lbl;  // маркер даты актуальности
+  });
   return {labels,valCashless:days.map(d=>cl[d]),valCash:days.map(d=>cs[d]),keys:days};
 }
 
@@ -959,6 +1141,9 @@ function refresh(){
   if(!LIVE_DATA) return;
   const data=filterData();
 
+  // Обновляем заголовки секций с реальными датами
+  updateSectionTitles(data);
+
   // Monthly
   const mon=monthlyData(data);
   mkBar('chartMonth',mon.labels,mon.values,'#3b82f6');
@@ -1004,6 +1189,10 @@ function printPDF(){
   const now=new Date().toLocaleString('ru-RU');
   const src=document.getElementById('headerSub').textContent;
   const flt=document.getElementById('filterCount').textContent;
+  const refInp=document.getElementById('refDateInput');
+  const refLabel=refInp&&refInp.value
+    ? new Date(refInp.value+'T12:00:00').toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric'})
+    : 'макс. дата из данных';
   const dayC=topClients(data,dy.keys,(r,k)=>k.includes(r.date));
   const wkC=topClients(data,wk.weeks,(r,w)=>w.some(x=>r.date>=x.start&&r.date<=x.end));
   const monC=topClients(data,mon.keys,(r,k)=>k.includes(r.date.substring(0,7)));
@@ -1021,7 +1210,7 @@ function printPDF(){
     const tc=tot<0?'color:#dc2626':'color:#1e3a8a';
     return`<div style="display:flex;align-items:flex-start;justify-content:space-between;padding-bottom:8px;border-bottom:2px solid #1e3a5f;margin-bottom:10px;">
       <div><div style="font-size:14px;font-weight:700;color:#1e3a5f;">💰 ${title}</div>
-      <div style="font-size:10px;color:#6b7280;margin-top:2px;">${src} · Фильтры: ${flt}</div></div>
+      <div style="font-size:10px;color:#6b7280;margin-top:2px;">${src} · Дата актуальности: ${refLabel} · Фильтры: ${flt}</div></div>
       <div style="text-align:right;font-size:10px;color:#6b7280;">Итого: <b style="${tc}">${fmtS(tot)}</b><br>Сформировано: ${now}</div>
     </div>
     <div style="background:${ic||'#eff6ff'};border-left:3px solid ${ic?'#d97706':'#3b82f6'};border-radius:4px;padding:7px 11px;margin-bottom:10px;font-size:11px;color:#1e3a5f;line-height:1.5;">💡 ${insight}</div>`;
@@ -1088,6 +1277,9 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#fff;color:#111;}
 </body></html>`);
   w.document.close();
 }
+
+// Инициализация поля даты
+initRefDate();
 </script>
 </body>
 </html>
